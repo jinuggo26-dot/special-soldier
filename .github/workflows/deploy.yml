@@ -1,0 +1,40 @@
+name: 스페셜 솔져 웹앱 배포
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  webapp:
+    name: 아이폰 웹앱 (GitHub Pages)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - name: 최신 릴리스에서 webapp.zip 받기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "${{ github.repository }}" --pattern 'webapp.zip' --dir .
+          mkdir site
+          unzip -q webapp.zip -d site
+          touch site/.nojekyll
+          echo "window.SS_SERVER = '${{ vars.SS_SERVER }}';" > site/config.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: pages
+        uses: actions/deploy-pages@v4
+
