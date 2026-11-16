@@ -1,39 +1,71 @@
 name: 스페셜 솔져 웹앱 배포
 
+# 언제 배포하나
+#  1) 새 릴리스를 발행(Publish)했을 때
+#  2) Actions 에서 Run workflow 를 눌렀을 때
+#  3) 15분마다 자동 확인: 최신 릴리스의 webapp 파일이 바뀌었으면(파일만 교체한 경우 포함) 자동 배포
 on:
   release:
     types: [published]
   workflow_dispatch:
+  schedule:
+    - cron: '*/15 * * * *'
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
-concurrency:
-  group: deploy
-  cancel-in-progress: true
-
 jobs:
-  webapp:
-    name: 아이폰 웹앱 (GitHub Pages)
+  check:
+    name: 새 파일 확인
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.pages.outputs.page_url }}
+    outputs:
+      go: ${{ steps.c.outputs.go }}
+      asset: ${{ steps.c.outputs.asset }}
+      name: ${{ steps.c.outputs.name }}
     steps:
-      - name: 최신 릴리스에서 webapp.zip 받기
+      - id: c
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download --repo "${{ github.repository }}" --pattern 'webapp*.zip' --dir dl
-          mkdir site
-          unzip -q "$(ls dl/webapp*.zip | head -1)" -d site
+          # 최신 릴리스에서 webapp*.zip 중 가장 마지막에 올린 파일
+          INFO=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '[.assets[] | select(.name | test("^webapp.*\\.zip$"))] | sort_by(.updated_at) | last | "\(.id)-\(.updated_at) \(.name)"')
+          ASSET="${INFO%% *}"; NAME="${INFO#* }"
+          if [ -z "$ASSET" ] || [ "$ASSET" = "null" ]; then echo "webapp zip 없음"; echo "go=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"; echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          OWNER="$GITHUB_REPOSITORY_OWNER"; REPO="${GITHUB_REPOSITORY#*/}"
+          LIVE=$(curl -fsSL "https://$OWNER.github.io/$REPO/deployed.txt?t=$(date +%s)" 2>/dev/null || echo none)
+          echo "릴리스 파일: $NAME ($ASSET) / 지금 배포된 것: $LIVE"
+          if [ "${{ github.event_name }}" != "schedule" ] || [ "$ASSET" != "$LIVE" ]; then echo "go=1" >> "$GITHUB_OUTPUT"; else echo "go=0" >> "$GITHUB_OUTPUT"; fi
+
+  webapp:
+    name: 아이폰 웹앱 (GitHub Pages)
+    needs: check
+    if: needs.check.outputs.go == '1'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
+    steps:
+      - name: 최신 릴리스의 webapp 파일 받기
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ needs.check.outputs.name }}
+        run: |
+          mkdir -p dl site
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "$NAME" --dir dl
+          unzip -q "dl/$NAME" -d site
           touch site/.nojekyll
-          if [ -n "${{ vars.SS_SERVER }}" ]; then echo "window.SS_SERVER = '${{ vars.SS_SERVER }}';" > site/config.js; fi
+          echo "${{ needs.check.outputs.asset }}" > site/deployed.txt
+          if [ -n "${{ vars.SS_SERVER }}" ]; then echo "window.SS_SERVER='${{ vars.SS_SERVER }}';" > site/config.js; fi
+          ls site | head
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-      - id: pages
+      - id: dep
         uses: actions/deploy-pages@v4
