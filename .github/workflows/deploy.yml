@@ -16,6 +16,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write
 
 jobs:
   check:
@@ -67,6 +68,13 @@ jobs:
           echo "${{ needs.check.outputs.asset }}" > site/deployed.txt
           if [ -n "${{ vars.SS_SERVER }}" ]; then echo "window.SS_SERVER='${{ vars.SS_SERVER }}';" > site/config.js; fi
           ls site | head
+      - name: 이 실행에 남아 있는 예전 파일 묶음 지우기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("github-pages")) | .id'); do
+            echo "지움: $id"; gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" || true
+          done
       - uses: actions/configure-pages@v5
       # 파일 묶음 이름에 '몇 번째 시도'를 붙임 → 실패한 작업을 [Re-run] 해도
       # 전 시도의 묶음과 이름이 겹치지 않아 "Multiple artifacts named github-pages" 오류가 안 남
