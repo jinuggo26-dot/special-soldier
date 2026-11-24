@@ -68,8 +68,13 @@ jobs:
           if [ -n "${{ vars.SS_SERVER }}" ]; then echo "window.SS_SERVER='${{ vars.SS_SERVER }}';" > site/config.js; fi
           ls site | head
       - uses: actions/configure-pages@v5
+      # 파일 묶음 이름에 '몇 번째 시도'를 붙임 → 실패한 작업을 [Re-run] 해도
+      # 전 시도의 묶음과 이름이 겹치지 않아 "Multiple artifacts named github-pages" 오류가 안 남
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
+          name: github-pages-${{ github.run_attempt }}
       - id: dep
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
