@@ -43,17 +43,14 @@ jobs:
           echo "릴리스 파일: $TAG / $NAME ($ASSET) / 지금 배포된 것: $LIVE"
           if [ "${{ github.event_name }}" != "schedule" ] || [ "$ASSET" != "$LIVE" ]; then echo "go=1" >> "$GITHUB_OUTPUT"; else echo "go=0" >> "$GITHUB_OUTPUT"; fi
 
-  webapp:
-    name: 아이폰 웹앱 (GitHub Pages)
+  # 1단계: 웹앱 파일을 받아서 GitHub Pages 용 묶음으로 올림
+  build:
+    name: 웹앱 파일 준비
     needs: check
     if: needs.check.outputs.go == '1'
     runs-on: ubuntu-latest
-    concurrency:
-      group: deploy
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.dep.outputs.page_url }}
+    outputs:
+      art: ${{ steps.n.outputs.art }}
     steps:
       - name: 가장 최근 webapp 파일 받기
         env:
@@ -64,7 +61,6 @@ jobs:
           mkdir -p dl site
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$NAME" --dir dl
           unzip -q "dl/$NAME" -d site
-          touch site/.nojekyll
           echo "${{ needs.check.outputs.asset }}" > site/deployed.txt
           if [ -n "${{ vars.SS_SERVER }}" ]; then echo "window.SS_SERVER='${{ vars.SS_SERVER }}';" > site/config.js; fi
           ls site | head
@@ -75,14 +71,43 @@ jobs:
           for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("github-pages")) | .id'); do
             echo "지움: $id"; gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" || true
           done
-      - uses: actions/configure-pages@v5
-      # 파일 묶음 이름에 '몇 번째 시도'를 붙임 → 실패한 작업을 [Re-run] 해도
-      # 전 시도의 묶음과 이름이 겹치지 않아 "Multiple artifacts named github-pages" 오류가 안 남
-      - uses: actions/upload-pages-artifact@v3
+      # 파일 묶음 이름에 '몇 번째 시도'를 붙임 → 전체를 다시 실행해도 이름이 겹치지 않음
+      - id: n
+        run: echo "art=github-pages-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
-          name: github-pages-${{ github.run_attempt }}
+          name: ${{ steps.n.outputs.art }}
+
+  # 2단계: 따로 나눈 작업에서 배포
+  #  - 올리자마자 같은 작업에서 바로 배포하면, 올린 묶음이 아직 목록에 안 보여서
+  #    "No artifacts named github-pages-1 were found" 로 실패하는 경우가 있음 (GitHub 쪽 타이밍 문제)
+  #  - 그래서 작업을 나누고, 묶음이 목록에 보일 때까지 최대 3분 기다린 뒤 배포
+  #  - 실패한 배포만 다시 실행해도 1단계에서 올린 묶음 이름을 그대로 씀
+  webapp:
+    name: 아이폰 웹앱 (GitHub Pages)
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
+    steps:
+      - name: 올린 파일 묶음이 보일 때까지 기다리기
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ART: ${{ needs.build.outputs.art }}
+        run: |
+          for i in $(seq 1 36); do
+            N=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq "[.artifacts[] | select(.name == \"$ART\")] | length" || echo 0)
+            if [ "$N" != "0" ]; then echo "준비됨: $ART"; exit 0; fi
+            echo "기다리는 중 ($i): $ART"; sleep 5
+          done
+          echo "3분 동안 안 보여서 그냥 배포를 시도합니다"
       - id: dep
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
-          artifact_name: github-pages-${{ github.run_attempt }}
+          artifact_name: ${{ needs.build.outputs.art }}
